@@ -2,159 +2,185 @@
 import { useEffect, useState } from 'react';
 import AppLayout from '@/components/AppLayout';
 import { apiFetch, getToken } from '@/components/useApi';
+import DateFilter, { EMPTY_FILTER, DateFilterValue, buildParams } from '@/components/DateFilter';
 
-const STATUSES = ['сдана', 'не сдана', 'нужно проверить'];
-const EMPTY = { year: new Date().getFullYear(), status: 'не сдана', comment: '' };
+const STATUS_COLORS: Record<string,string> = {
+  'не подана': 'badge-error',
+  'нужно проверить': 'badge-warning',
+  'подана': 'badge-success',
+  'принята': 'badge-success',
+  'отклонена': 'badge-error',
+};
+
+const STATUSES = ['не подана','нужно проверить','подана','принята','отклонена'];
 
 export default function DeclarationsPage() {
   const [decls, setDecls] = useState<any[]>([]);
-  const [assets, setAssets] = useState<any[]>([]);
+  const [files, setFiles] = useState<any[]>([]);
   const [modal, setModal] = useState(false);
-  const [form, setForm] = useState<any>(EMPTY);
+  const [viewDecl, setViewDecl] = useState<any>(null);
+  const [form, setForm] = useState<any>({ year: new Date().getFullYear(), status:'не подана', comment:'', deadline:'' });
   const [uploading, setUploading] = useState(false);
+  const [dateFilter, setDateFilter] = useState<DateFilterValue>(EMPTY_FILTER);
 
   async function load() {
-    const [dRes, aRes] = await Promise.all([
-      apiFetch('/api/declarations').then(r => r.json()),
-      apiFetch('/api/assets').then(r => r.json()),
-    ]);
-    setDecls(Array.isArray(dRes) ? dRes : []);
-    setAssets(Array.isArray(aRes) ? aRes : []);
+    const params = buildParams(dateFilter);
+    const res = await apiFetch(`/api/declarations?${params}`).then(r => r.json());
+    setDecls(Array.isArray(res) ? res : []);
   }
 
-  useEffect(() => { load(); }, []);
+  async function loadFiles(declId: number) {
+    const res = await apiFetch(`/api/files?entity_type=declaration&entity_id=${declId}`).then(r => r.json());
+    setFiles(Array.isArray(res) ? res : []);
+  }
+
+  useEffect(() => { load(); }, [dateFilter]);
 
   async function save() {
     const method = form.id ? 'PUT' : 'POST';
     const url = form.id ? `/api/declarations/${form.id}` : '/api/declarations';
     await apiFetch(url, { method, body: JSON.stringify(form) });
-    setModal(false);
-    load();
+    setModal(false); load();
   }
 
   async function del(id: number) {
     if (!confirm('Удалить декларацию?')) return;
-    await apiFetch(`/api/declarations/${id}`, { method: 'DELETE' });
+    await apiFetch(`/api/declarations/${id}`, { method:'DELETE' });
     load();
   }
 
-  async function uploadFile(declId: number, e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  async function uploadFile(e: React.ChangeEvent<HTMLInputElement>, declId: number) {
+    const file = e.target.files?.[0]; if (!file) return;
     setUploading(true);
     const fd = new FormData();
     fd.append('file', file);
-    fd.append('related_type', 'declaration');
-    fd.append('related_id', String(declId));
-    await fetch('/api/files', { method: 'POST', headers: { Authorization: `Bearer ${getToken()}` }, body: fd });
+    fd.append('entity_type', 'declaration');
+    fd.append('entity_id', String(declId));
+    fd.append('description', file.name);
+    await fetch('/api/files', { method:'POST', headers: { Authorization:`Bearer ${getToken()}` }, body: fd });
+    await loadFiles(declId);
     setUploading(false);
-    load();
   }
 
-  function getStatusColor(s: string) {
-    if (s === 'сдана') return 'badge-green';
-    if (s === 'нужно проверить') return 'badge-yellow';
-    return 'badge-red';
+  async function openView(d: any) {
+    setViewDecl(d);
+    await loadFiles(d.id);
   }
 
-  // Years with foreign assets but no declaration
-  const declaredYears = new Set(decls.map(d => d.year));
-  const foreignYears = Array.from(new Set(assets.filter((a: any) => a.is_foreign).map((a: any) => a.declaration_year).filter(Boolean)));
-  const missingDecls = foreignYears.filter(y => !declaredYears.has(y));
+  const toPrepare = decls.filter(d => d.status === 'не подана' || d.status === 'нужно проверить').length;
 
   return (
     <AppLayout>
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-bold text-slate-800">Декларации</h1>
-          <button onClick={() => { setForm(EMPTY); setModal(true); }} className="btn-primary text-sm py-2 px-4">
-            + Добавить
-          </button>
+          <button onClick={() => { setForm({ year: new Date().getFullYear(), status:'не подана', comment:'', deadline:'' }); setModal(true); }} className="btn-primary text-sm py-2 px-4">+ Добавить</button>
         </div>
 
-        {missingDecls.length > 0 && (
-          <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
-            <p className="font-semibold text-red-700 mb-1">⚠️ Нет деклараций за годы с зарубежными активами:</p>
-            {missingDecls.map(y => <p key={y} className="text-red-600 text-sm">{y} год</p>)}
+        {toPrepare > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 text-sm text-amber-700">
+            ⚠️ {toPrepare} деклараций нужно подготовить или проверить
           </div>
         )}
 
-        {decls.map((d: any) => {
-          const yearAssets = assets.filter((a: any) => a.declaration_year === d.year);
-          const foreignAssets = yearAssets.filter((a: any) => a.is_foreign);
-          return (
+        <DateFilter value={dateFilter} onChange={setDateFilter} />
+
+        <div className="space-y-2">
+          {decls.map((d: any) => (
             <div key={d.id} className="card">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h2 className="font-bold text-slate-800 text-lg">{d.year} год</h2>
-                    <span className={getStatusColor(d.status)}>{d.status}</span>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-bold text-slate-800">{d.year} год</span>
+                    <span className={`badge ${STATUS_COLORS[d.status]||'badge-neutral'}`}>{d.status}</span>
                   </div>
-                  {d.comment && <p className="text-sm text-slate-500 mb-2">{d.comment}</p>}
-                  <div className="text-xs text-slate-500 space-y-1">
-                    <p>Активов за год: {yearAssets.length}</p>
-                    {foreignAssets.length > 0 && (
-                      <p className="text-amber-600">Зарубежных активов: {foreignAssets.length}</p>
-                    )}
-                  </div>
-                  {foreignAssets.length > 0 && (
-                    <div className="mt-2 space-y-1">
-                      {foreignAssets.map((a: any) => (
-                        <div key={a.id} className="flex items-center gap-2">
-                          <span className={a.is_declared ? 'badge-green' : 'badge-red'}>
-                            {a.is_declared ? '✓' : '✗'} {a.name}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                  {d.deadline && <p className="text-xs text-slate-500 mt-0.5">⏰ Срок: {d.deadline}</p>}
+                  {d.comment && (
+                    <p className="text-xs text-slate-500 mt-1 whitespace-pre-line line-clamp-3">{d.comment}</p>
                   )}
-                  <div className="mt-3 flex items-center gap-2">
-                    <label className={`text-sm px-3 py-1.5 rounded-xl border cursor-pointer ${uploading ? 'opacity-50' : 'hover:bg-slate-50'}`}>
-                      📎 Загрузить файл
-                      <input type="file" className="hidden" onChange={e => uploadFile(d.id, e)} />
-                    </label>
-                  </div>
+                  {d.submitted_at && <p className="text-xs text-green-600 mt-1">✅ Подана: {d.submitted_at?.slice(0,10)}</p>}
                 </div>
-                <div className="flex flex-col gap-1 ml-2">
-                  <button onClick={() => { setForm({ ...d }); setModal(true); }} className="p-2 rounded-xl hover:bg-slate-100 text-slate-500">✏️</button>
-                  <button onClick={() => del(d.id)} className="p-2 rounded-xl hover:bg-red-100 text-red-400">🗑️</button>
+                <div className="flex gap-1.5 flex-shrink-0">
+                  <button onClick={() => openView(d)} className="text-slate-300 hover:text-slate-600">👁️</button>
+                  <button onClick={() => { setForm({...d}); setModal(true); }} className="text-slate-300 hover:text-slate-600">✏️</button>
+                  <button onClick={() => del(d.id)} className="text-slate-200 hover:text-red-500">🗑️</button>
                 </div>
               </div>
             </div>
-          );
-        })}
-
-        {decls.length === 0 && <p className="text-center text-slate-400 py-8">Нет деклараций</p>}
+          ))}
+          {decls.length === 0 && <p className="text-center text-slate-400 py-10">Нет деклараций</p>}
+        </div>
       </div>
 
+      {/* Edit/Add modal */}
       {modal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-lg">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <h2 className="font-bold text-slate-800">{form.id ? 'Редактировать' : 'Новая декларация'}</h2>
-              <button onClick={() => setModal(false)} className="text-slate-400 text-xl">✕</button>
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center">
+          <div className="bg-white rounded-t-3xl sm:rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="p-4 border-b sticky top-0 bg-white flex items-center justify-between">
+              <h2 className="font-bold">{form.id ? 'Редактировать' : 'Новая декларация'}</h2>
+              <button onClick={() => setModal(false)} className="text-slate-400 text-2xl">✕</button>
             </div>
-            <div className="p-4 space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label">Год</label>
-                  <input className="input" type="number" value={form.year} onChange={e => setForm({ ...form, year: parseInt(e.target.value) })} />
-                </div>
-                <div>
-                  <label className="label">Статус</label>
-                  <select className="input" value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
-                    {STATUSES.map(s => <option key={s}>{s}</option>)}
-                  </select>
-                </div>
-              </div>
+            <div className="p-4 space-y-3 pb-6">
+              <div><label className="label">Год</label><input className="input" type="number" value={form.year} onChange={e => setForm({...form, year:e.target.value})} /></div>
               <div>
-                <label className="label">Комментарий</label>
-                <textarea className="input" rows={3} value={form.comment} onChange={e => setForm({ ...form, comment: e.target.value })} />
+                <label className="label">Статус</label>
+                <div className="flex flex-wrap gap-2">
+                  {STATUSES.map(s => (
+                    <button key={s} onClick={() => setForm({...form, status:s})}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-medium border ${form.status===s?'border-blue-500 bg-blue-50 text-blue-700':'border-slate-200 text-slate-600'}`}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
+              <div><label className="label">Срок подачи</label><input className="input" type="date" value={form.deadline||''} onChange={e => setForm({...form, deadline:e.target.value})} /></div>
+              {(form.status==='подана'||form.status==='принята') && (
+                <div><label className="label">Дата подачи</label><input className="input" type="date" value={form.submitted_at?.slice(0,10)||''} onChange={e => setForm({...form, submitted_at:e.target.value})} /></div>
+              )}
+              <div><label className="label">Комментарий / Детали</label><textarea className="input" rows={4} value={form.comment||''} onChange={e => setForm({...form, comment:e.target.value})} placeholder="Активы, доходы, примечания..." /></div>
             </div>
-            <div className="p-4 border-t border-slate-100 flex gap-2">
+            <div className="p-4 border-t sticky bottom-0 bg-white flex gap-2">
               <button onClick={() => setModal(false)} className="btn-secondary flex-1">Отмена</button>
               <button onClick={save} className="btn-primary flex-1">Сохранить</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* View modal */}
+      {viewDecl && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center">
+          <div className="bg-white rounded-t-3xl sm:rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="p-4 border-b sticky top-0 bg-white flex items-center justify-between">
+              <h2 className="font-bold">Декларация {viewDecl.year}</h2>
+              <button onClick={() => setViewDecl(null)} className="text-slate-400 text-2xl">✕</button>
+            </div>
+            <div className="p-4 space-y-4 pb-6">
+              <div className="flex items-center gap-2">
+                <span className={`badge ${STATUS_COLORS[viewDecl.status]||'badge-neutral'}`}>{viewDecl.status}</span>
+                {viewDecl.deadline && <span className="text-xs text-slate-500">⏰ Срок: {viewDecl.deadline}</span>}
+              </div>
+              {viewDecl.comment && (
+                <div className="bg-slate-50 rounded-xl p-3 text-sm text-slate-700 whitespace-pre-line">{viewDecl.comment}</div>
+              )}
+
+              <div>
+                <p className="text-sm font-semibold text-slate-700 mb-2">Файлы</p>
+                <label className={`block w-full py-2 text-center rounded-xl border border-dashed border-slate-300 text-sm text-slate-500 cursor-pointer hover:border-blue-400 ${uploading?'opacity-50':''}`}>
+                  {uploading ? 'Загрузка...' : '📎 Прикрепить файл'}
+                  <input type="file" className="hidden" onChange={e => uploadFile(e, viewDecl.id)} disabled={uploading} />
+                </label>
+                {files.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {files.map((f: any) => (
+                      <a key={f.id} href={`/api/files/${f.id}/download`}
+                        className="flex items-center gap-2 p-2 bg-blue-50 rounded-xl text-sm text-blue-700 hover:bg-blue-100">
+                        📄 {f.description || f.original_name}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

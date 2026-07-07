@@ -8,57 +8,75 @@ export async function GET(req: NextRequest) {
 
   const db = getDb();
   const uid = user.userId;
+  const { searchParams } = new URL(req.url);
+  const year = searchParams.get('year');
+  const month = searchParams.get('month');
+  const dateFrom = searchParams.get('date_from');
+  const dateTo = searchParams.get('date_to');
 
-  const years: number[] = (db.prepare(
-    'SELECT DISTINCT year FROM transactions WHERE user_id = ? ORDER BY year'
-  ).all(uid) as any[]).map((r: any) => r.year);
+  function buildTxWhere(extraAnd = '') {
+    let where = 'user_id=?';
+    const p: any[] = [uid];
+    if (year && !month && !dateFrom) { where += ' AND year=?'; p.push(year); }
+    if (year && month) { where += ' AND year=? AND strftime(\'%m\', date)=?'; p.push(year, month.padStart(2,'0')); }
+    if (dateFrom) { where += ' AND date>=?'; p.push(dateFrom); }
+    if (dateTo) { where += ' AND date<=?'; p.push(dateTo); }
+    if (extraAnd) where += extraAnd;
+    return { where, p };
+  }
 
-  const assetYears: number[] = (db.prepare(
-    'SELECT DISTINCT declaration_year FROM assets WHERE user_id = ? AND declaration_year IS NOT NULL ORDER BY declaration_year'
-  ).all(uid) as any[]).map((r: any) => r.declaration_year);
-
-  const allYears = Array.from(new Set([...years, ...assetYears])).sort();
-
-  const rows = allYears.map(year => {
+  // If specific filter (month/date range), return single period
+  if (month || dateFrom) {
+    const { where, p } = buildTxWhere();
     const txs = db.prepare(
-      'SELECT type, SUM(amount_kzt) as total, payment_method FROM transactions WHERE user_id=? AND year=? GROUP BY type, payment_method'
-    ).all(uid, year) as any[];
+      `SELECT type, payment_method, SUM(amount_kzt) as total, SUM(cash_amount) as cash_total, SUM(noncash_amount) as noncash_total
+       FROM transactions WHERE ${where} GROUP BY type, payment_method`
+    ).all(...p) as any[];
 
-    let income = 0, expenses = 0, asset_purchases = 0, asset_sales = 0;
-    let cash_in = 0, cash_out = 0, noncash_in = 0, noncash_out = 0;
-
+    let income=0, expenses=0, asset_purchases=0, asset_sales=0;
+    let cash_income=0, cash_expenses=0, noncash_income=0, noncash_expenses=0;
     for (const tx of txs) {
-      const amt = tx.total || 0;
-      const isCash = tx.payment_method === 'наличные';
-      if (tx.type === 'доход') {
-        income += amt;
-        if (isCash) cash_in += amt; else noncash_in += amt;
-      } else if (tx.type === 'расход') {
-        expenses += amt;
-        if (isCash) cash_out += amt; else noncash_out += amt;
-      } else if (tx.type === 'покупка актива') {
-        asset_purchases += amt;
-        if (isCash) cash_out += amt; else noncash_out += amt;
-      } else if (tx.type === 'продажа актива') {
-        asset_sales += amt;
-        if (isCash) cash_in += amt; else noncash_in += amt;
-      }
+      const amt=tx.total||0, cashAmt=tx.cash_total||0, noncashAmt=tx.noncash_total||0;
+      if (tx.type==='доход') { income+=amt; cash_income+=cashAmt; noncash_income+=noncashAmt; }
+      else if (tx.type==='расход') { expenses+=amt; cash_expenses+=cashAmt; noncash_expenses+=noncashAmt; }
+      else if (tx.type==='покупка актива') { asset_purchases+=amt; cash_expenses+=cashAmt; noncash_expenses+=noncashAmt; }
+      else if (tx.type==='продажа актива') { asset_sales+=amt; cash_income+=cashAmt; noncash_income+=noncashAmt; }
     }
+    const property_assets = (db.prepare(`SELECT COALESCE(SUM(amount_kzt),0) as total FROM assets WHERE user_id=? AND status='активный' AND category NOT IN ('наличные','банковский счет')`).get(uid) as any)?.total||0;
+    const money_assets = (db.prepare(`SELECT COALESCE(SUM(amount_kzt),0) as total FROM assets WHERE user_id=? AND category IN ('наличные','банковский счет')`).get(uid) as any)?.total||0;
+    const cash_balance=cash_income-cash_expenses, noncash_balance=noncash_income-noncash_expenses;
+    const label = month ? `${year}-${month.padStart(2,'0')}` : `${dateFrom}–${dateTo||''}`;
+    return NextResponse.json([{ date: label, income, expenses, asset_purchases, asset_sales, cash_balance, noncash_balance, property_assets, money_assets, total_capital: property_assets+cash_balance+noncash_balance+money_assets, end_balance: income+asset_sales-expenses-asset_purchases }]);
+  }
 
-    const assets_total = (db.prepare(
-      'SELECT COALESCE(SUM(amount_kzt),0) as total FROM assets WHERE user_id=? AND declaration_year=?'
-    ).get(uid, year) as any)?.total || 0;
+  // By year
+  let txYears: number[];
+  if (year) {
+    txYears = [parseInt(year)];
+  } else {
+    const yrRows = db.prepare('SELECT DISTINCT year FROM transactions WHERE user_id=? ORDER BY year').all(uid) as any[];
+    const asYrRows = db.prepare('SELECT DISTINCT declaration_year FROM assets WHERE user_id=? AND declaration_year IS NOT NULL ORDER BY declaration_year').all(uid) as any[];
+    txYears = Array.from(new Set([...yrRows.map((r:any) => r.year), ...asYrRows.map((r:any) => r.declaration_year)])).sort() as number[];
+  }
 
-    return { year, income, expenses, asset_purchases, asset_sales, assets_total };
+  const rows = txYears.map(y => {
+    const txs = db.prepare(
+      'SELECT type, payment_method, SUM(amount_kzt) as total, SUM(cash_amount) as cash_total, SUM(noncash_amount) as noncash_total FROM transactions WHERE user_id=? AND year=? GROUP BY type, payment_method'
+    ).all(uid, y) as any[];
+    let income=0, expenses=0, asset_purchases=0, asset_sales=0;
+    let cash_income=0, cash_expenses=0, noncash_income=0, noncash_expenses=0;
+    for (const tx of txs) {
+      const amt=tx.total||0, cashAmt=tx.cash_total||0, noncashAmt=tx.noncash_total||0;
+      if (tx.type==='доход') { income+=amt; cash_income+=cashAmt; noncash_income+=noncashAmt; }
+      else if (tx.type==='расход') { expenses+=amt; cash_expenses+=cashAmt; noncash_expenses+=noncashAmt; }
+      else if (tx.type==='покупка актива') { asset_purchases+=amt; cash_expenses+=cashAmt; noncash_expenses+=noncashAmt; }
+      else if (tx.type==='продажа актива') { asset_sales+=amt; cash_income+=cashAmt; noncash_income+=noncashAmt; }
+    }
+    const property_assets = (db.prepare(`SELECT COALESCE(SUM(amount_kzt),0) as total FROM assets WHERE user_id=? AND declaration_year=? AND status='активный' AND category NOT IN ('наличные','банковский счет')`).get(uid,y) as any)?.total||0;
+    const money_assets = (db.prepare(`SELECT COALESCE(SUM(amount_kzt),0) as total FROM assets WHERE user_id=? AND declaration_year=? AND category IN ('наличные','банковский счет')`).get(uid,y) as any)?.total||0;
+    const cash_balance=cash_income-cash_expenses, noncash_balance=noncash_income-noncash_expenses;
+    return { year:y, income, expenses, asset_purchases, asset_sales, cash_income, noncash_income, cash_expenses, noncash_expenses, cash_balance, noncash_balance, property_assets, money_assets, total_capital: property_assets+cash_balance+noncash_balance+money_assets, end_balance: income+asset_sales-expenses-asset_purchases };
   });
 
-  let running_cash = 0, running_noncash = 0;
-  const result = rows.map((r, i) => {
-    const prev = i > 0 ? rows[i - 1] : null;
-    const start = prev ? prev.income + prev.asset_sales - prev.expenses - prev.asset_purchases : 0;
-    const end = start + r.income + r.asset_sales - r.expenses - r.asset_purchases;
-    return { ...r, start_balance: start, end_balance: end };
-  });
-
-  return NextResponse.json(result);
+  return NextResponse.json(rows);
 }
