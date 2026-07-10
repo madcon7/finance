@@ -11,8 +11,9 @@ export async function GET(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Не авторизован' }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
-  const relatedType = searchParams.get('related_type');
-  const relatedId = searchParams.get('related_id');
+  // Accept both entity_type/entity_id and related_type/related_id
+  const relatedType = searchParams.get('entity_type') || searchParams.get('related_type');
+  const relatedId = searchParams.get('entity_id') || searchParams.get('related_id');
 
   const db = getDb();
   let query = 'SELECT * FROM files WHERE user_id = ?';
@@ -31,8 +32,9 @@ export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
     const file = formData.get('file') as File;
-    const relatedType = formData.get('related_type') as string;
-    const relatedId = formData.get('related_id') as string;
+    // Accept both entity_type/entity_id and related_type/related_id
+    const relatedType = (formData.get('entity_type') || formData.get('related_type')) as string;
+    const relatedId = (formData.get('entity_id') || formData.get('related_id')) as string;
 
     if (!file) return NextResponse.json({ error: 'Файл не выбран' }, { status: 400 });
 
@@ -46,9 +48,16 @@ export async function POST(req: NextRequest) {
     fs.writeFileSync(filePath, buffer);
 
     const db = getDb();
+
+    // Ensure original_name column exists
+    const fileCols = (db.prepare("PRAGMA table_info(files)").all() as any[]).map((c: any) => c.name);
+    if (!fileCols.includes('original_name')) {
+      db.exec('ALTER TABLE files ADD COLUMN original_name TEXT');
+    }
+
     const result = db.prepare(
-      'INSERT INTO files (user_id, related_type, related_id, file_name, file_path, file_type) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(user.userId, relatedType, parseInt(relatedId), file.name, safeName, file.type);
+      'INSERT INTO files (user_id, related_type, related_id, file_name, original_name, file_path, file_type) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(user.userId, relatedType, parseInt(relatedId), file.name, file.name, safeName, file.type);
 
     return NextResponse.json(db.prepare('SELECT * FROM files WHERE id=?').get(result.lastInsertRowid), { status: 201 });
   } catch (e) {

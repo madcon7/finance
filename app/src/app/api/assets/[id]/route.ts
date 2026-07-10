@@ -47,8 +47,13 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
       params.id, user.userId
     );
 
+    // 1-year exemption rule: no tax if held for 365+ days
+    const heldOneYear = body.purchase_date && body.sold_date
+      ? (new Date(body.sold_date).getTime() - new Date(body.purchase_date).getTime()) >= 365 * 24 * 60 * 60 * 1000
+      : false;
+
     // Auto-create tax on sale with profit
-    if (beingSold && profit > 0) {
+    if (beingSold && profit > 0 && !heldOneYear) {
       const hasTax = db.prepare('SELECT id FROM taxes WHERE asset_id=? AND user_id=?').get(params.id, user.userId);
       if (!hasTax) {
         const sellYear = body.sold_date ? new Date(body.sold_date).getFullYear() : new Date().getFullYear();

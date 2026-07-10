@@ -1,14 +1,14 @@
 'use client';
 import { useEffect, useState } from 'react';
 import AppLayout from '@/components/AppLayout';
-import { apiFetch } from '@/components/useApi';
-import { formatKZT, CATEGORY_EMOJI } from '@/lib/format';
+import { apiFetch, getToken } from '@/components/useApi';
+import { formatKZT, CATEGORY_EMOJI, CURRENCIES, CURRENCY_SYMBOL } from '@/lib/format';
 import NumInput from '@/components/NumInput';
 import DateFilter, { EMPTY_FILTER, DateFilterValue, buildParams } from '@/components/DateFilter';
 
-const TYPES = ['доход','расход','покупка актива','продажа актива','перевод'];
+const TYPES = ['доход','расход','покупка актива','продажа актива','займ выдача','займ возврат','дивиденды'];
 const METHODS = ['наличные','безналичные','смешанный'];
-const CATEGORIES = ['недвижимость','автомобиль','доля в бизнесе','банковский счет','ценные бумаги','криптовалюта','наличные','другое'];
+const CATEGORIES = ['недвижимость','автомобиль','доля в бизнесе','банковский счет','ценные бумаги','криптовалюта','наличные','дивиденды','займ выданный','другое'];
 
 const EMPTY: any = {
   date: new Date().toISOString().slice(0,10), type:'доход',
@@ -17,18 +17,31 @@ const EMPTY: any = {
   new_asset_name:'', new_asset_category:'недвижимость',
   new_asset_country:'Казахстан', new_asset_city:'',
   new_asset_is_foreign:false, new_asset_needs_declaration:false,
+  currency:'KZT', original_amount:'', exchange_rate:1,
 };
 
-const TYPE_ICON: Record<string,string> = { 'доход':'↑','расход':'↓','покупка актива':'🛒','продажа актива':'💰','перевод':'↔' };
+const TYPE_ICON: Record<string,string> = {
+  'доход':'↑', 'расход':'↓', 'покупка актива':'🛒',
+  'продажа актива':'💰', 'займ выдача':'🤝', 'займ возврат':'↩️', 'дивиденды':'💰',
+};
+
+const TYPE_IS_OUT: Record<string,boolean> = {
+  'расход':true, 'покупка актива':true, 'займ выдача':true,
+  'доход':false, 'продажа актива':false, 'займ возврат':false, 'дивиденды':false,
+};
 
 export default function TransactionsPage() {
   const [txs, setTxs] = useState<any[]>([]);
   const [assets, setAssets] = useState<any[]>([]);
   const [modal, setModal] = useState(false);
+  const [viewModal, setViewModal] = useState<any>(null);
   const [form, setForm] = useState<any>(EMPTY);
   const [search, setSearch] = useState('');
   const [dateFilter, setDateFilter] = useState<DateFilterValue>(EMPTY_FILTER);
   const [typeFilter, setTypeFilter] = useState('');
+  const [files, setFiles] = useState<any[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [rates, setRates] = useState<Record<string,number>>({ KZT:1, USD:450, EUR:490, AED:122, TRY:13 });
 
   async function load() {
     const params = buildParams(dateFilter);
@@ -42,7 +55,35 @@ export default function TransactionsPage() {
     setAssets(Array.isArray(aRes) ? aRes : []);
   }
 
+  async function loadRates() {
+    try { const r = await apiFetch('/api/exchange-rate').then(x => x.json()); setRates(r); } catch {}
+  }
+
+  async function loadFiles(txId: number) {
+    const data = await apiFetch(`/api/files?entity_type=transaction&entity_id=${txId}`).then(r => r.json());
+    setFiles(Array.isArray(data) ? data : []);
+  }
+
   useEffect(() => { load(); }, [search, dateFilter, typeFilter]);
+
+  function handleCurrencyChange(currency: string) {
+    const origAmt = parseFloat(form.original_amount) || 0;
+    const rate = rates[currency] || 1;
+    const kzt = currency === 'KZT' ? origAmt : Math.round(origAmt * rate);
+    setForm((f: any) => ({ ...f, currency, exchange_rate: rate, amount_kzt: kzt ? String(kzt) : '' }));
+  }
+
+  function handleOrigAmountChange(v: string) {
+    const origAmt = parseFloat(v) || 0;
+    const rate = rates[form.currency] || 1;
+    const kzt = form.currency === 'KZT' ? origAmt : Math.round(origAmt * rate);
+    setForm((f: any) => ({ ...f, original_amount: v, amount_kzt: kzt ? String(kzt) : '' }));
+  }
+
+  async function openAdd() {
+    await loadRates();
+    setForm(EMPTY); setModal(true);
+  }
 
   async function save() {
     const method = form.id ? 'PUT' : 'POST';
@@ -54,6 +95,7 @@ export default function TransactionsPage() {
     if (form.payment_method === 'безналичные') { noncash=total; cash=0; }
     await apiFetch(url, { method, body: JSON.stringify({
       ...form, amount_kzt:total, cash_amount:cash, noncash_amount:noncash,
+      original_amount: parseFloat(form.original_amount)||total,
       asset_id: form.asset_id||null, year: new Date(form.date).getFullYear(),
     })});
     setModal(false); load();
@@ -64,22 +106,35 @@ export default function TransactionsPage() {
     await apiFetch(`/api/transactions/${id}`, {method:'DELETE'}); load();
   }
 
+  async function openView(tx: any) {
+    setViewModal(tx);
+    await loadFiles(tx.id);
+  }
+
+  async function uploadFile(txId: number, e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]; if (!file) return;
+    setUploading(true);
+    const fd = new FormData();
+    fd.append('file', file); fd.append('entity_type','transaction'); fd.append('entity_id', String(txId));
+    await fetch('/api/files', { method:'POST', headers:{ Authorization:`Bearer ${getToken()}` }, body: fd });
+    await loadFiles(txId);
+    setUploading(false); e.target.value = '';
+  }
+
   const isBuying = form.type === 'покупка актива';
   const isSelling = form.type === 'продажа актива';
+  const isLoanOut = form.type === 'займ выдача';
+  const isDividend = form.type === 'дивиденды';
 
-  const incomeTotal = txs.filter(t => t.type==='доход'||t.type==='продажа актива').reduce((s,t) => s+t.amount_kzt, 0);
-  const expenseTotal = txs.filter(t => t.type==='расход'||t.type==='покупка актива').reduce((s,t) => s+t.amount_kzt, 0);
-
-  // Group by date for display
-  const byDate: Record<string, any[]> = {};
-  txs.forEach(t => { if (!byDate[t.date]) byDate[t.date]=[]; byDate[t.date].push(t); });
+  const incomeTotal = txs.filter(t => !TYPE_IS_OUT[t.type]).reduce((s,t) => s+t.amount_kzt, 0);
+  const expenseTotal = txs.filter(t => TYPE_IS_OUT[t.type]).reduce((s,t) => s+t.amount_kzt, 0);
 
   return (
     <AppLayout>
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-bold text-slate-800">Транзакции</h1>
-          <button onClick={() => { setForm(EMPTY); setModal(true); }} className="btn-primary text-sm py-2 px-4">+ Добавить</button>
+          <button onClick={openAdd} className="btn-primary text-sm py-2 px-4">+ Добавить</button>
         </div>
 
         <input type="search" placeholder="🔍 Поиск..." className="input" value={search} onChange={e => setSearch(e.target.value)} />
@@ -104,7 +159,7 @@ export default function TransactionsPage() {
 
         <div className="space-y-2">
           {txs.map((t: any) => {
-            const isOut = t.type==='расход'||t.type==='покупка актива';
+            const isOut = TYPE_IS_OUT[t.type] ?? false;
             return (
               <div key={t.id} className="card py-3">
                 <div className="flex items-start justify-between gap-2">
@@ -116,11 +171,15 @@ export default function TransactionsPage() {
                       <p className="text-sm font-medium text-slate-800 truncate">{t.description||t.type}</p>
                       <p className="text-xs text-slate-400">{t.date} · {t.payment_method}</p>
                       {t.asset_name && <p className="text-xs text-blue-600 truncate">🔗 {t.asset_name}</p>}
+                      {t.currency && t.currency !== 'KZT' && t.original_amount > 0 && (
+                        <p className="text-xs text-slate-400">{CURRENCY_SYMBOL[t.currency]}{t.original_amount?.toLocaleString('ru')}</p>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-start gap-1.5 flex-shrink-0">
                     <span className={`font-bold text-sm ${isOut?'text-red-600':'text-green-600'}`}>{isOut?'−':'+'}{formatKZT(t.amount_kzt)}</span>
-                    <button onClick={() => { setForm({...t, amount_kzt:String(t.amount_kzt), cash_amount:String(t.cash_amount||''), noncash_amount:String(t.noncash_amount||''), asset_id:t.asset_id||''}); setModal(true); }} className="text-slate-300 hover:text-slate-600">✏️</button>
+                    <button onClick={() => openView(t)} className="text-slate-300 hover:text-slate-600">📎</button>
+                    <button onClick={() => { setForm({...t, amount_kzt:String(t.amount_kzt), cash_amount:String(t.cash_amount||''), noncash_amount:String(t.noncash_amount||''), original_amount:String(t.original_amount||t.amount_kzt||''), currency:t.currency||'KZT', asset_id:t.asset_id||''}); setModal(true); }} className="text-slate-300 hover:text-slate-600">✏️</button>
                     <button onClick={() => del(t.id)} className="text-slate-200 hover:text-red-500">🗑️</button>
                   </div>
                 </div>
@@ -131,6 +190,7 @@ export default function TransactionsPage() {
         </div>
       </div>
 
+      {/* ===== ADD/EDIT MODAL ===== */}
       {modal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center">
           <div className="bg-white rounded-t-3xl sm:rounded-2xl w-full max-w-lg max-h-[95vh] overflow-y-auto">
@@ -150,8 +210,28 @@ export default function TransactionsPage() {
                   ))}
                 </div>
               </div>
+
+              {(form.type === 'займ выдача' || form.type === 'займ возврат') && (
+                <div className={`rounded-xl p-3 text-xs ${form.type==='займ выдача'?'bg-orange-50 text-orange-700':'bg-green-50 text-green-700'}`}>
+                  {form.type==='займ выдача' ? '🤝 Деньги уйдут из вашего баланса (расход)' : '↩️ Деньги вернутся в ваш баланс (доход)'}
+                </div>
+              )}
+
               <div><label className="label">Дата</label><input className="input" type="date" value={form.date} onChange={e => setForm({...form, date:e.target.value})} /></div>
-              <div><label className="label">Сумма (₸) *</label><NumInput value={form.amount_kzt} onChange={v => setForm({...form, amount_kzt:v})} placeholder="0" /></div>
+
+              <div>
+                <label className="label">Сумма *</label>
+                <div className="flex gap-2">
+                  <select className="input w-28 flex-shrink-0" value={form.currency} onChange={e => handleCurrencyChange(e.target.value)}>
+                    {CURRENCIES.map(c => <option key={c} value={c}>{CURRENCY_SYMBOL[c]} {c}</option>)}
+                  </select>
+                  <NumInput value={form.original_amount || form.amount_kzt} onChange={handleOrigAmountChange} placeholder="0" />
+                </div>
+                {form.currency !== 'KZT' && form.amount_kzt && (
+                  <p className="text-xs text-slate-400 mt-1">≈ {formatKZT(parseFloat(form.amount_kzt))} · 1 {form.currency} = {rates[form.currency]} ₸</p>
+                )}
+              </div>
+
               <div>
                 <label className="label">Способ</label>
                 <div className="flex gap-2">
@@ -171,7 +251,6 @@ export default function TransactionsPage() {
               )}
               <div><label className="label">Описание</label><input className="input" value={form.description} onChange={e => setForm({...form, description:e.target.value})} placeholder="Зарплата, продажа квартиры..." /></div>
 
-              {/* Buy: new asset info */}
               {isBuying && !form.id && (
                 <div className="bg-blue-50 rounded-2xl p-3 space-y-3">
                   <p className="text-xs font-semibold text-blue-700">🏠 Данные нового актива (создастся автоматически)</p>
@@ -186,7 +265,6 @@ export default function TransactionsPage() {
                 </div>
               )}
 
-              {/* Sell: pick asset */}
               {isSelling && (
                 <div>
                   <label className="label">Какой актив продаёте? *</label>
@@ -201,18 +279,38 @@ export default function TransactionsPage() {
                     const sell = parseFloat(form.amount_kzt)||0;
                     if (!asset||!sell) return null;
                     const profit = sell - asset.amount_kzt;
+                    const held1y = asset.purchase_date && form.date
+                      ? (new Date(form.date).getTime() - new Date(asset.purchase_date).getTime()) >= 365*24*60*60*1000
+                      : false;
                     return (
                       <div className={`mt-2 rounded-xl p-2 text-xs ${profit>0?'bg-green-50 text-green-700':'bg-slate-50 text-slate-600'}`}>
-                        {profit>0 ? `✅ Прибыль: +${formatKZT(profit)} → налог ~${formatKZT(profit*0.1)}` : profit<0 ? `📉 Убыток: ${formatKZT(Math.abs(profit))} — налог 0 ₸` : 'Нет прибыли'}
-                        {asset.is_foreign && <span className="ml-2 text-blue-600">📋 Зарубежный → декларация</span>}
+                        {profit>0 ? `✅ Прибыль: +${formatKZT(profit)}` : profit<0 ? `📉 Убыток: ${formatKZT(Math.abs(profit))}` : 'Нет прибыли'}
+                        {profit>0 && held1y && <span className="ml-2 text-green-600 font-medium">✅ Владели 1+ год — налог 0</span>}
+                        {profit>0 && !held1y && <span className="ml-2 text-orange-600">→ налог ~{formatKZT(profit*0.1)}</span>}
+                        {asset.is_foreign && <span className="ml-2 text-blue-600">📋 Декларация</span>}
                       </div>
                     );
                   })()}
                 </div>
               )}
 
-              {/* Other types: link to asset */}
-              {!isBuying && !isSelling && (
+              {isLoanOut && (
+                <div className="bg-orange-50 rounded-xl p-3 text-xs text-orange-700">
+                  🤝 Можно привязать к активу "Займ выданный" для отслеживания
+                </div>
+              )}
+
+              {isDividend && (
+                <div className="bg-green-50 rounded-2xl p-3 space-y-3">
+                  <p className="text-xs font-semibold text-green-700">💰 Дивиденды — считаются как доход</p>
+                  <div>
+                    <label className="label">Компания / Эмитент *</label>
+                    <input className="input" value={form.description} onChange={e => setForm({...form, description:e.target.value})} placeholder="Apple, Halyk Bank, КазМунайГаз..." />
+                  </div>
+                </div>
+              )}
+
+              {!isBuying && !isSelling && !isDividend && (
                 <div>
                   <label className="label">Связанный актив (необязательно)</label>
                   <select className="input" value={form.asset_id} onChange={e => setForm({...form, asset_id:e.target.value})}>
@@ -227,6 +325,47 @@ export default function TransactionsPage() {
             <div className="p-4 border-t sticky bottom-0 bg-white flex gap-2">
               <button onClick={() => setModal(false)} className="btn-secondary flex-1">Отмена</button>
               <button onClick={save} className="btn-primary flex-1">Сохранить</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== VIEW / FILES MODAL ===== */}
+      {viewModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center">
+          <div className="bg-white rounded-t-3xl sm:rounded-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto">
+            <div className="p-4 border-b flex items-center justify-between">
+              <h2 className="font-bold truncate">{viewModal.description || viewModal.type}</h2>
+              <button onClick={() => setViewModal(null)} className="text-slate-400 text-2xl">✕</button>
+            </div>
+            <div className="p-4 space-y-4">
+              <div className="bg-slate-50 rounded-2xl p-3 grid grid-cols-2 gap-2 text-sm">
+                <div><span className="text-slate-400">Дата:</span><br/><span className="font-medium">{viewModal.date}</span></div>
+                <div><span className="text-slate-400">Сумма:</span><br/><span className="font-bold">{formatKZT(viewModal.amount_kzt)}</span></div>
+                <div><span className="text-slate-400">Тип:</span><br/><span>{viewModal.type}</span></div>
+                <div><span className="text-slate-400">Способ:</span><br/><span>{viewModal.payment_method}</span></div>
+                {viewModal.currency && viewModal.currency !== 'KZT' && (
+                  <div><span className="text-slate-400">Валюта:</span><br/><span>{CURRENCY_SYMBOL[viewModal.currency]}{viewModal.original_amount?.toLocaleString('ru')} {viewModal.currency}</span></div>
+                )}
+              </div>
+              {viewModal.comment && <p className="text-sm text-slate-600 bg-slate-50 rounded-xl p-3">{viewModal.comment}</p>}
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="font-semibold text-slate-700">Документы ({files.length})</h3>
+                  <label className="btn-primary text-sm py-1.5 px-3 cursor-pointer">{uploading?'...':'+ Загрузить'}<input type="file" className="hidden" onChange={e => uploadFile(viewModal.id, e)} /></label>
+                </div>
+                {files.map((f: any) => (
+                  <div key={f.id} className="flex items-center justify-between py-2 border-b border-slate-50 last:border-0">
+                    <div className="flex items-center gap-2 min-w-0"><span>📄</span><span className="text-sm truncate">{f.original_name || f.file_name}</span></div>
+                    <div className="flex gap-1 flex-shrink-0">
+                      <a href={`/api/files/${f.id}`} className="p-1.5 hover:bg-slate-100 rounded-lg text-blue-600" download>⬇️</a>
+                      <button onClick={async () => { await apiFetch(`/api/files/${f.id}`,{method:'DELETE'}); loadFiles(viewModal.id); }} className="p-1.5 hover:bg-red-100 rounded-lg text-red-400">🗑️</button>
+                    </div>
+                  </div>
+                ))}
+                {files.length===0 && <p className="text-sm text-slate-400 py-2">Нет документов</p>}
+              </div>
             </div>
           </div>
         </div>

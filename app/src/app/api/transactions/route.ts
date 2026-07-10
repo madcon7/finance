@@ -80,8 +80,13 @@ export async function POST(req: NextRequest) {
           WHERE id=? AND user_id=?`
         ).run(body.date, sellAmt, profit, assetId, user.userId);
 
-        // Auto-create tax if profit > 0
-        if (profit > 0) {
+        // 1-year exemption: no tax if held 365+ days
+        const heldOneYear = asset.purchase_date && body.date
+          ? (new Date(body.date).getTime() - new Date(asset.purchase_date).getTime()) >= 365 * 24 * 60 * 60 * 1000
+          : false;
+
+        // Auto-create tax if profit > 0 and not exempt
+        if (profit > 0 && !heldOneYear) {
           const hasTax = db.prepare('SELECT id FROM taxes WHERE asset_id=? AND user_id=?').get(assetId, user.userId);
           if (!hasTax) {
             db.prepare(`INSERT INTO taxes (user_id, asset_id, year, description, buy_amount, sell_amount, profit, tax_amount, tax_rate, status)

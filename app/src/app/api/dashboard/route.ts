@@ -21,12 +21,12 @@ export async function GET(req: NextRequest) {
 
   // Cash (from transactions: income - expenses in cash)
   const cashTx = db.prepare(
-    `SELECT type, SUM(amount_kzt) as total FROM transactions WHERE user_id=? AND payment_method='наличные'${yearFilter} GROUP BY type`
+    `SELECT type, SUM(amount_kzt) as total FROM transactions WHERE user_id=? AND payment_method IN ('наличные','смешанный')${yearFilter} GROUP BY type`
   ).all(uid, ...yearParam) as any[];
 
   // Noncash (from transactions)
   const noncashTx = db.prepare(
-    `SELECT type, SUM(amount_kzt) as total FROM transactions WHERE user_id=? AND payment_method='безналичные'${yearFilter} GROUP BY type`
+    `SELECT type, SUM(amount_kzt) as total FROM transactions WHERE user_id=? AND payment_method IN ('безналичные','смешанный')${yearFilter} GROUP BY type`
   ).all(uid, ...yearParam) as any[];
 
   // Also include cash/bank assets
@@ -38,6 +38,9 @@ export async function GET(req: NextRequest) {
     `SELECT COALESCE(SUM(amount_kzt),0) as total FROM assets WHERE user_id=? AND category='банковский счет' AND status='активный'`
   ).get(uid) as any)?.total || 0;
 
+  const INCOME_TYPES = ['доход', 'продажа актива', 'дивиденды', 'займ возврат'];
+  const EXPENSE_TYPES = ['расход', 'покупка актива', 'займ выдача'];
+
   function calcBalance(txs: any[], types_in: string[], types_out: string[]) {
     let bal = 0;
     for (const tx of txs) {
@@ -47,8 +50,8 @@ export async function GET(req: NextRequest) {
     return bal;
   }
 
-  const cashFromTx = calcBalance(cashTx, ['доход', 'продажа актива'], ['расход', 'покупка актива']);
-  const noncashFromTx = calcBalance(noncashTx, ['доход', 'продажа актива'], ['расход', 'покупка актива']);
+  const cashFromTx = calcBalance(cashTx, INCOME_TYPES, EXPENSE_TYPES);
+  const noncashFromTx = calcBalance(noncashTx, INCOME_TYPES, EXPENSE_TYPES);
 
   const total_cash = Math.max(0, cashFromTx) + cashAssets;
   const total_noncash = Math.max(0, noncashFromTx) + bankAssets;

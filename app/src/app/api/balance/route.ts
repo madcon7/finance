@@ -37,8 +37,8 @@ export async function GET(req: NextRequest) {
     let cash_income=0, cash_expenses=0, noncash_income=0, noncash_expenses=0;
     for (const tx of txs) {
       const amt=tx.total||0, cashAmt=tx.cash_total||0, noncashAmt=tx.noncash_total||0;
-      if (tx.type==='доход') { income+=amt; cash_income+=cashAmt; noncash_income+=noncashAmt; }
-      else if (tx.type==='расход') { expenses+=amt; cash_expenses+=cashAmt; noncash_expenses+=noncashAmt; }
+      if (tx.type==='доход'||tx.type==='дивиденды'||tx.type==='займ возврат') { income+=amt; cash_income+=cashAmt; noncash_income+=noncashAmt; }
+      else if (tx.type==='расход'||tx.type==='займ выдача') { expenses+=amt; cash_expenses+=cashAmt; noncash_expenses+=noncashAmt; }
       else if (tx.type==='покупка актива') { asset_purchases+=amt; cash_expenses+=cashAmt; noncash_expenses+=noncashAmt; }
       else if (tx.type==='продажа актива') { asset_sales+=amt; cash_income+=cashAmt; noncash_income+=noncashAmt; }
     }
@@ -67,8 +67,8 @@ export async function GET(req: NextRequest) {
     let cash_income=0, cash_expenses=0, noncash_income=0, noncash_expenses=0;
     for (const tx of txs) {
       const amt=tx.total||0, cashAmt=tx.cash_total||0, noncashAmt=tx.noncash_total||0;
-      if (tx.type==='доход') { income+=amt; cash_income+=cashAmt; noncash_income+=noncashAmt; }
-      else if (tx.type==='расход') { expenses+=amt; cash_expenses+=cashAmt; noncash_expenses+=noncashAmt; }
+      if (tx.type==='доход'||tx.type==='дивиденды'||tx.type==='займ возврат') { income+=amt; cash_income+=cashAmt; noncash_income+=noncashAmt; }
+      else if (tx.type==='расход'||tx.type==='займ выдача') { expenses+=amt; cash_expenses+=cashAmt; noncash_expenses+=noncashAmt; }
       else if (tx.type==='покупка актива') { asset_purchases+=amt; cash_expenses+=cashAmt; noncash_expenses+=noncashAmt; }
       else if (tx.type==='продажа актива') { asset_sales+=amt; cash_income+=cashAmt; noncash_income+=noncashAmt; }
     }

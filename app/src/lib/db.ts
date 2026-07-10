@@ -134,4 +134,13 @@ function runMigrations(db: Database.Database) {
   const declCols = (db.prepare("PRAGMA table_info(declarations)").all() as any[]).map((c: any) => c.name);
   if (!declCols.includes('deadline')) db.exec('ALTER TABLE declarations ADD COLUMN deadline TEXT');
   if (!declCols.includes('submitted_at')) db.exec('ALTER TABLE declarations ADD COLUMN submitted_at TEXT');
+
+  // Currency support
+  if (!cols.includes('currency')) db.exec("ALTER TABLE assets ADD COLUMN currency TEXT DEFAULT 'KZT'");
+  if (!cols.includes('original_amount')) db.exec('ALTER TABLE assets ADD COLUMN original_amount REAL DEFAULT 0');
+  if (!cols.includes('exchange_rate')) db.exec('ALTER TABLE assets ADD COLUMN exchange_rate REAL DEFAULT 1');
+
+  if (!txCols.includes('currency')) db.exec("ALTER TABLE transactions ADD COLUMN currency TEXT DEFAULT 'KZT'");
+  if (!txCols.includes('original_amount')) db.exec('ALTER TABLE transactions ADD COLUMN original_amount REAL DEFAULT 0');
+  if (!txCols.includes('exchange_rate')) db.exec('ALTER TABLE transactions ADD COLUMN exchange_rate REAL DEFAULT 1');
 }
