@@ -77,7 +77,7 @@ export default function TransactionsPage() {
     const origAmt = parseFloat(v) || 0;
     const rate = rates[form.currency] || 1;
     const kzt = form.currency === 'KZT' ? origAmt : Math.round(origAmt * rate);
-    setForm((f: any) => ({ ...f, original_amount: v, amount_kzt: kzt ? String(kzt) : '' }));
+    setForm((f: any) => ({ ...f, original_amount: v, amount_kzt: String(kzt || '') }));
   }
 
   async function openAdd() {
@@ -220,15 +220,21 @@ export default function TransactionsPage() {
               <div><label className="label">Дата</label><input className="input" type="date" value={form.date} onChange={e => setForm({...form, date:e.target.value})} /></div>
 
               <div>
-                <label className="label">Сумма *</label>
+                <label className="label">Валюта</label>
                 <div className="flex gap-2">
-                  <select className="input w-28 flex-shrink-0" value={form.currency} onChange={e => handleCurrencyChange(e.target.value)}>
-                    {CURRENCIES.map(c => <option key={c} value={c}>{CURRENCY_SYMBOL[c]} {c}</option>)}
-                  </select>
-                  <NumInput value={form.original_amount || form.amount_kzt} onChange={handleOrigAmountChange} placeholder="0" />
+                  {CURRENCIES.map(c => (
+                    <button key={c} onClick={() => handleCurrencyChange(c)}
+                      className={`flex-1 py-2 rounded-xl text-sm font-medium border ${form.currency===c?'border-blue-500 bg-blue-50 text-blue-700':'border-slate-200 text-slate-600'}`}>
+                      {CURRENCY_SYMBOL[c]} {c}
+                    </button>
+                  ))}
                 </div>
-                {form.currency !== 'KZT' && form.amount_kzt && (
-                  <p className="text-xs text-slate-400 mt-1">≈ {formatKZT(parseFloat(form.amount_kzt))} · 1 {form.currency} = {rates[form.currency]} ₸</p>
+              </div>
+              <div>
+                <label className="label">Сумма {form.currency !== 'KZT' ? `в ${form.currency}` : '(₸)'} *</label>
+                <NumInput value={form.original_amount} onChange={handleOrigAmountChange} placeholder="0" />
+                {form.currency !== 'KZT' && form.original_amount && (
+                  <p className="text-xs text-slate-400 mt-1">≈ {formatKZT(parseFloat(form.amount_kzt||'0'))} · 1 {form.currency} = {rates[form.currency]} ₸</p>
                 )}
               </div>
 
